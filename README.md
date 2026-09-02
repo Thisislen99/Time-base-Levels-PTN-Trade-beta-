@@ -1,2 +1,2 @@
-# Time-base-Levels-PTN-Trade-beta-
+# Time-base-Levels-PTN-Trades-beta-
 Indicator Pine script
