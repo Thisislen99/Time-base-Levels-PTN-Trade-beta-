@@ -1,0 +1,1112 @@
+// Optimized and Customized by Gemini for PTN.Trades
+//@version=6
+indicator('Time-Based Level [PTN.Trades] Beta', 'TBL [PTN.Trades] Beta', overlay = true, max_boxes_count=500, max_labels_count=500, max_lines_count=500)
+
+/// =============================================================================
+//#region ✅ SECTION A: GLOBAL TYPES & HELPERS
+// =============================================================================
+
+// 1. Helper
+get_style(str) =>
+    switch str
+        'Solid'  => line.style_solid
+        'Dotted' => line.style_dotted
+        'Dashed' => line.style_dashed
+        => line.style_dotted
+
+get_label_size(size_str) =>
+    switch size_str
+        'Tiny'   => size.tiny
+        'Small'  => size.small
+        'Normal' => size.normal
+        'Large'  => size.large
+        'Huge'   => size.huge
+        => size.tiny
+
+get_table_size(size_opt) =>
+    switch size_opt
+        'Tiny'   => size.tiny
+        'Small'  => size.small
+        'Normal' => size.normal
+        'Large'  => size.large
+        'Huge'   => size.huge
+        => size.normal
+
+// ฟังก์ชันแปลงข้อเลือกตำแหน่งให้เป็น Position ของระบบ Pine Script
+get_table_pos(v_pos, h_pos) =>
+    if v_pos == 'top'
+        h_pos == 'left' ? position.top_left : h_pos == 'right' ? position.top_right : position.top_center
+    else if v_pos == 'middle'
+        h_pos == 'left' ? position.middle_left : h_pos == 'right' ? position.middle_right : position.middle_center
+    else
+        h_pos == 'left' ? position.bottom_left : h_pos == 'right' ? position.bottom_right : position.bottom_center
+
+// 2. Type
+type session_data
+    box b = na
+    label l = na
+    line l_hi = na
+    line l_lo = na
+    float h = -1.0e10
+    float lw = 1.0e10
+    int ht = na
+    int lt = na
+    bool hi_hit = false
+    bool lo_hit = false
+    int start_time = na
+
+type gap_data
+    float h = na
+    float l = na
+    bool is_bull = false
+    bool is_weekly = false
+    bool is_inversion = false
+    bool filled = false
+    int start_time = na
+    line l_hi = na
+    line l_lo = na
+    line l_mid = na
+    line l_q25 = na
+    line l_q75 = na
+    linefill l_fill = na
+    label lb_hi = na
+    label lb_lo = na
+    label lb_mid = na
+    label lb_q25 = na
+    label lb_q75 = na
+
+type org_gap_data
+    gap_data base
+    int end_time = na
+    int d_id = 0
+
+// 3. Gap Rendering & Cleanup
+cleanup_gap(gap_data g) =>
+    if not na(g)
+        line.delete(g.l_hi)
+        line.delete(g.l_lo)
+        line.delete(g.l_mid)
+        line.delete(g.l_q25)
+        line.delete(g.l_q75)
+        linefill.delete(g.l_fill)
+        label.delete(g.lb_hi)
+        label.delete(g.lb_lo)
+        label.delete(g.lb_mid)
+        label.delete(g.lb_q25)
+        label.delete(g.lb_q75)
+
+f_render_gap(float p1, float p2, int start_t, string pref, color bull_c, color bear_c, int trans, string hls, color hlc, string hlz, string ces, color cec, string cez, string qs, color qc, string qz, int w, bool show_range, bool is_w) =>
+    float hi   = math.max(p1, p2)
+    float lo   = math.min(p1, p2)
+    float diff = math.abs(p1 - p2)
+    bool is_bull = p2 > p1
+    float mid = math.avg(hi, lo)
+    
+    float pips_val = diff / syminfo.mintick
+    string range_txt = show_range ? " (" + str.tostring(pips_val, "#") + ")" : ""
+    
+    color m_c = is_bull ? bull_c : bear_c
+    
+    float price_upper = hi - (diff * 0.25) 
+    float price_lower = hi - (diff * 0.75)   
+    string txt_hi    = is_bull ? " Open" : " Close"
+    string txt_lo    = is_bull ? " Close"  : " Open" 
+    string label_upper = is_bull ? " 25%" : " 75%"
+    string label_lower = is_bull ? " 75%" : " 25%"
+    
+    g = gap_data.new()
+    g.h := hi
+    g.l := lo
+    g.is_bull := is_bull
+    g.is_weekly := is_w
+    g.is_inversion := false
+    g.start_time := start_t
+
+    color l_c_hl = hls == 'None' ? na : hlc
+    g.l_hi := line.new(start_t, hi, time, hi, xloc.bar_time, color=l_c_hl, width=w, style=get_style(hls))
+    g.l_lo := line.new(start_t, lo, time, lo, xloc.bar_time, color=l_c_hl, width=w, style=get_style(hls))
+    g.l_fill := linefill.new(g.l_hi, g.l_lo, color.new(m_c, trans))
+
+    color l_c_ce = ces == 'None' ? na : cec
+    g.l_mid := line.new(start_t, mid, time, mid, xloc.bar_time, color=l_c_ce, width=w, style=get_style(ces))
+
+    color l_c_q = qs == 'None' ? na : qc
+    g.l_q25 := line.new(start_t, price_upper, time, price_upper, xloc.bar_time, color=l_c_q, width=w, style=get_style(qs))
+    g.l_q75 := line.new(start_t, price_lower, time, price_lower, xloc.bar_time, color=l_c_q, width=w, style=get_style(qs))
+    
+    if hlz != 'None'
+        g.lb_hi := label.new(time, hi, pref + txt_hi, xloc.bar_time, style=label.style_label_left, color=#ffffff00, textcolor=hlc, size=get_label_size(hlz))
+        g.lb_lo := label.new(time, lo, pref + txt_lo, xloc.bar_time, style=label.style_label_left, color=#ffffff00, textcolor=hlc, size=get_label_size(hlz))
+    
+    if cez != 'None'
+        g.lb_mid := label.new(time, mid, pref + ' 50%' + range_txt, xloc.bar_time, style=label.style_label_left, color=#ffffff00, textcolor=cec, size=get_label_size(cez))
+    
+    if qz != 'None'
+        g.lb_q25 := label.new(time, price_upper, pref + label_upper, xloc.bar_time, style=label.style_label_left, color=#ffffff00, textcolor=qc, size=get_label_size(qz))
+        g.lb_q75 := label.new(time, price_lower, pref + label_lower, xloc.bar_time, style=label.style_label_left, color=#ffffff00, textcolor=qc, size=get_label_size(qz))
+    g
+
+// 4. Time 
+is_new_day   = ta.change(time('D')) != 0
+is_new_week  = ta.change(time('W')) != 0
+is_new_month = ta.change(time('M')) != 0
+is_new_year  = ta.change(time('12M')) != 0
+is_intraday  = timeframe.isintraday and not timeframe.isdaily
+
+var int cw_time = na
+var int cm_time = na
+if is_new_week
+    cw_time := time
+if is_new_month
+    cm_time := time
+
+ny_h            = hour(time, 'America/New_York')
+ny_m            = minute(time, 'America/New_York')
+is_ny_midnight  = ny_h == 0  and ny_m == 0
+is_ny_0930      = ny_h == 9  and ny_m == 30
+is_ny_1615      = ny_h == 16 and ny_m == 15
+is_ny_1800      = ny_h == 18 and ny_m == 00
+
+is_bar_closing_at(target_h, target_m) =>
+    int y = year(time, 'America/New_York')
+    int m = month(time, 'America/New_York')
+    int d = dayofmonth(time, 'America/New_York')
+    int target_ts = timestamp('America/New_York', y, m, d, target_h, target_m, 0)
+    time_close == target_ts
+
+lookback_20_t = request.security(syminfo.tickerid, "D", time[21], lookahead = barmerge.lookahead_on)
+lookback_40_t = request.security(syminfo.tickerid, "D", time[41], lookahead = barmerge.lookahead_on)
+lookback_60_t = request.security(syminfo.tickerid, "D", time[61], lookahead = barmerge.lookahead_on)
+
+var int day_count = 0
+if is_new_day
+    day_count += 1
+// =============================================================================    
+//#endregion
+// =============================================================================
+
+//==============================================================================
+//#region ✅ SECTION 1: SESSIONS
+// =============================================================================
+grp_ses = 'SESSIONS'
+show_ses = input.bool(true, 'Show Sessions |', inline = '1st', group = grp_ses)
+disp_mode_ses = input.string('Current Week', 'Display Limit', options = ['Last Day', 'Current Week', 'Current Month', '20 Days Lookback', '40 Days Lookback', '60 Days Lookback'], inline = '1st', group = grp_ses)
+show_ipda_div = input.bool(true, "Show Divider |", inline = "2nd", group = grp_ses)
+master_ipda_col = input.color(color.black, "Color", inline = "2nd", group = grp_ses)
+ses_border = input.string('Dotted', 'Session Outline', options = ['None', 'Solid', 'Dashed', 'Dotted'], inline = '3rd', group = grp_ses)
+ext_l_style_in = input.string('Dotted', 'Session High/Low', options = ['None', 'Solid', 'Dashed', 'Dotted'], group = grp_ses)
+ses_txt_size = input.string('None', 'Label', options = ['None', 'Tiny', 'Small', 'Normal', 'Large', 'Huge'], inline = '3rd', group = grp_ses)
+bg_transp = input.int(95, 'Fill %', minval = 0, maxval = 100, inline = '3rd', group = grp_ses)
+
+use_custom_tz = input.bool(false, "Use Custom Timezone | ", inline = "tz_logic", tooltip = "Default is New York Time (Auto-adjusting for DST). Use this checkbox for manual UTC offset.", group = grp_ses)
+custom_tz_offset = input.int(-4, "UTC Offset", minval = -12, maxval = 14, inline = "tz_logic", group = grp_ses)
+var tz_string = use_custom_tz ? str.format('UTC{0}{1}', custom_tz_offset >= 0 ? '+' : '-', math.abs(custom_tz_offset)) : "America/New_York"
+
+s1_on = input.bool(true, '', inline = 's1', group = grp_ses)
+s1_n = input.string('Pre-Market', '', inline = 's1', group = grp_ses)
+s1_t = input.session('0830-0930', '', inline = 's1', group = grp_ses)
+s1_c = input.color(color.orange, '', inline = 's1', group = grp_ses)
+s1_hl = input.bool(false, '', inline = 's1', group = grp_ses)
+s2_on = input.bool(true, '', inline = 's2', group = grp_ses)
+s2_n = input.string('Market Open', '', inline = 's2', group = grp_ses)
+s2_t = input.session('0930-1000', '', inline = 's2', group = grp_ses)
+s2_c = input.color(color.black, '', inline = 's2', group = grp_ses)
+s2_hl = input.bool(false, '', inline = 's2', group = grp_ses)
+s3_on = input.bool(true, '', inline = 's3', group = grp_ses)
+s3_n = input.string('10:00 - 11:30', '', inline = 's3', group = grp_ses)
+s3_t = input.session('1000-1130', '', inline = 's3', group = grp_ses)
+s3_c = input.color(color.black, '', inline = 's3', group = grp_ses)
+s3_hl = input.bool(false, '', inline = 's3', group = grp_ses)
+s4_on = input.bool(true, '', inline = 's4', group = grp_ses)
+s4_n = input.string('Macro 1', '', inline = 's4', group = grp_ses)
+s4_t = input.session('0950-1010', '', inline = 's4', group = grp_ses)
+s4_c = input.color(color.red, '', inline = 's4', group = grp_ses)
+s4_hl = input.bool(false, '', inline = 's4', group = grp_ses)
+s5_on = input.bool(true, '', inline = 's5', group = grp_ses)
+s5_n = input.string('Macro 2', '', inline = 's5', group = grp_ses)
+s5_t = input.session('1050-1110', '', inline = 's5', group = grp_ses)
+s5_c = input.color(color.red, '', inline = 's5', group = grp_ses)
+s5_hl = input.bool(false, '', inline = 's5', group = grp_ses)
+s6_on = input.bool(false, '', inline = 's6', group = grp_ses)
+s6_n = input.string('', '', inline = 's6', group = grp_ses)
+s6_t = input.session('0000-0000', '', inline = 's6', group = grp_ses)
+s6_c = input.color(color.black, '', inline = 's6', group = grp_ses)
+s6_hl = input.bool(false, '', inline = 's6', group = grp_ses)
+s7_on = input.bool(false, '', inline = 's7', group = grp_ses)
+s7_n = input.string('', '', inline = 's7', group = grp_ses)
+s7_t = input.session('0000-0000', '', inline = 's7', group = grp_ses)
+s7_c = input.color(color.black, '', inline = 's7', group = grp_ses)
+s7_hl = input.bool(false, '', inline = 's7', group = grp_ses)
+s8_on = input.bool(false, '', inline = 's8', group = grp_ses)
+s8_n = input.string('', '', inline = 's8', group = grp_ses)
+s8_t = input.session('0000-0000', '', inline = 's8', group = grp_ses)
+s8_c = input.color(color.black, '', inline = 's8', group = grp_ses)
+s8_hl = input.bool(false, '', inline = 's8', group = grp_ses)
+s9_on = input.bool(true, '', inline = 's9', group = grp_ses)
+s9_n = input.string('Asian', '', inline = 's9', group = grp_ses)
+s9_t = input.session('2000-0000', '', inline = 's9', group = grp_ses)
+s9_c = input.color(color.red, '', inline = 's9', group = grp_ses)
+s9_hl = input.bool(false, '', inline = 's9', group = grp_ses)
+s10_on = input.bool(true, '', inline = 's10', group = grp_ses)
+s10_n = input.string('London', '', inline = 's10', group = grp_ses)
+s10_t = input.session('0100-0500', '', inline = 's10', group = grp_ses)
+s10_c = input.color(color.blue, '', inline = 's10', group = grp_ses)
+s10_hl = input.bool(false, '', inline = 's10', group = grp_ses)
+
+var session_boxes  = array.new_box(0)
+var session_lines  = array.new_line(0)
+var session_labels = array.new_label(0)
+var session_states = array.new<session_data>(10)
+var int[] box_day_id = array.new_int(0)
+var line[] ipda_lines = array.new_line(5, na)
+var label[] ipda_labels = array.new_label(5, na)
+
+if barstate.isfirst
+    for i = 0 to 9
+        array.set(session_states, i, session_data.new())
+
+f_render_ipda(int idx, int _time, string _txt, color _col) =>
+    if show_ipda_div and not na(_time)
+        line  ln = array.get(ipda_lines, idx)
+        label lb = array.get(ipda_labels, idx)
+        if na(ln)
+            ln := line.new(_time, low, _time, high, xloc.bar_time, extend.both, _col, get_style(ses_border), 1)
+            lb := label.new(_time, na, _txt, xloc = xloc.bar_time, yloc = yloc.belowbar, color = color.new(color.white, 100), textcolor = _col, style= label.style_label_up, size = get_label_size(ses_txt_size))
+            array.set(ipda_lines, idx, ln)
+            array.set(ipda_labels, idx, lb)
+        else
+            line.set_x1(ln, _time)
+            line.set_x2(ln, _time)
+            label.set_x(lb, _time)
+
+reset_session_objects() =>
+    for b in session_boxes
+        box.delete(b)
+    for lb in session_labels
+        label.delete(lb)
+    array.clear(session_boxes)
+    array.clear(session_labels)
+    array.clear(box_day_id)
+
+process_session(int idx, bool en, string ti, string nm, color cl, int tr, string style_border, string txt_sz, string tz, bool show_hl, string ext_style) =>
+    is_allowed_tf = timeframe.isintraday and timeframe.multiplier <= 60
+    
+    bool within_lookback = false
+
+    int start_of_day   = timestamp(year, month, dayofmonth, 0, 0)
+    int day_offset     = dayofweek == 1 ? 6 : dayofweek - 2 
+    int start_of_week  = start_of_day - (day_offset * 24 * 60 * 60 * 1000)
+    int start_of_month = timestamp(year, month, 1, 0, 0)
+
+    if disp_mode_ses == 'Last Day'
+        within_lookback := time >= start_of_day
+    else if disp_mode_ses == 'Current Week'
+        within_lookback := time >= start_of_week
+    else if disp_mode_ses == 'Current Month'
+        within_lookback := time >= start_of_month
+    else
+        within_lookback := true
+
+    if en and is_allowed_tf and within_lookback
+        session_data s = array.get(session_states, idx)
+        int in_s       = time(timeframe.period, ti, tz)
+        bool is_start  = not na(in_s) and na(in_s[1])
+        bool is_inside = not na(in_s)
+        bool is_end    = na(in_s) and not na(in_s[1])
+
+        if is_start
+            s.h := high, s.lw := low
+            s.ht := time, s.lt := time
+            s.hi_hit := false, s.lo_hit := false
+            color b_color = style_border == 'None' ? na : cl
+            s.b := box.new(time, s.h, time, s.lw, xloc=xloc.bar_time, bgcolor = color.new(cl, tr), border_color = b_color, border_style = get_style(style_border))
+            array.push(session_boxes, s.b)
+            array.push(box_day_id, day_count)
+            label lb = txt_sz != 'None' ? label.new(time, s.h, text = nm, xloc=xloc.bar_time, color = #ffffff00, textcolor = cl, style = label.style_label_down, size = get_label_size(txt_sz)) : na
+            array.push(session_labels, lb)
+            s.l := lb
+
+        if is_inside
+            s.h := math.max(s.h, high)
+            s.lw := math.min(s.lw, low)
+            if high >= s.h 
+                s.ht := time
+            if low <= s.lw
+                s.lt := time
+            box.set_top(s.b, s.h)
+            box.set_bottom(s.b, s.lw)
+            box.set_right(s.b, time)
+            if not na(s.l)
+                label.set_xy(s.l, math.round((box.get_left(s.b) + time) / 2), s.h)
+
+        if is_end and show_hl and ext_style != 'None'
+            s.l_hi := line.new(s.ht, s.h, time, s.h, xloc = xloc.bar_time, color = cl, style = get_style(ext_style))
+            s.l_lo := line.new(s.lt, s.lw, time, s.lw, xloc = xloc.bar_time, color = cl, style = get_style(ext_style))
+            array.push(session_lines, s.l_hi)
+            array.push(session_lines, s.l_lo)
+
+        if show_hl and not is_inside
+            if not na(s.l_hi) and not s.hi_hit
+                line.set_x2(s.l_hi, time)
+                if high >= s.h
+                    s.hi_hit := true
+            if not na(s.l_lo) and not s.lo_hit
+                line.set_x2(s.l_lo, time)
+                if low <= s.lw
+                    s.lo_hit := true
+
+if show_ses
+
+    if barstate.islast and show_ipda_div
+        f_render_ipda(0, lookback_60_t, "IPDA 60", master_ipda_col)
+        f_render_ipda(1, lookback_40_t, "IPDA 40", master_ipda_col)
+        f_render_ipda(2, lookback_20_t, "IPDA 20", master_ipda_col)
+        f_render_ipda(3, cw_time, "WEEK",  master_ipda_col)
+        f_render_ipda(4, cm_time, "MONTH", master_ipda_col)
+
+    limit_reset = switch disp_mode_ses
+        'Last Day'      => is_new_day or is_ny_1800
+        'Current Week'  => is_new_week
+        'Current Month' => is_new_month
+        => false
+    
+    if limit_reset
+        reset_session_objects()
+
+    if is_new_day or is_ny_1800
+        for l in session_lines
+            line.delete(l)
+        array.clear(session_lines)
+        
+        max_days = switch disp_mode_ses
+            '20 Days Lookback' => 20
+            '40 Days Lookback' => 40
+            '60 Days Lookback' => 60
+            => 999
+        if array.size(box_day_id) > 0
+            while array.size(box_day_id) > 0 and (day_count - array.get(box_day_id, 0)) > max_days
+                box.delete(array.remove(session_boxes, 0))
+                label.delete(array.remove(session_labels, 0))
+                array.remove(box_day_id, 0)
+
+    process_session(0, s1_on, s1_t, s1_n, s1_c, bg_transp, ses_border, ses_txt_size, tz_string, s1_hl, ext_l_style_in)
+    process_session(1, s2_on, s2_t, s2_n, s2_c, bg_transp, ses_border, ses_txt_size, tz_string, s2_hl, ext_l_style_in)
+    process_session(2, s3_on, s3_t, s3_n, s3_c, bg_transp, ses_border, ses_txt_size, tz_string, s3_hl, ext_l_style_in)
+    process_session(3, s4_on, s4_t, s4_n, s4_c, bg_transp, ses_border, ses_txt_size, tz_string, s4_hl, ext_l_style_in)
+    process_session(4, s5_on, s5_t, s5_n, s5_c, bg_transp, ses_border, ses_txt_size, tz_string, s5_hl, ext_l_style_in)
+    process_session(5, s6_on, s6_t, s6_n, s6_c, bg_transp, ses_border, ses_txt_size, tz_string, s6_hl, ext_l_style_in)
+    process_session(6, s7_on, s7_t, s7_n, s7_c, bg_transp, ses_border, ses_txt_size, tz_string, s7_hl, ext_l_style_in)
+    process_session(7, s8_on, s8_t, s8_n, s8_c, bg_transp, ses_border, ses_txt_size, tz_string, s8_hl, ext_l_style_in)
+    process_session(8, s9_on, s9_t, s9_n, s9_c, bg_transp, ses_border, ses_txt_size, tz_string, s9_hl, ext_l_style_in)
+    process_session(9, s10_on, s10_t, s10_n, s10_c, bg_transp, ses_border, ses_txt_size, tz_string, s10_hl, ext_l_style_in)
+
+else if not show_ses and (array.size(session_boxes) > 0 or array.size(session_lines) > 0)
+    reset_session_objects()
+    for l in session_lines
+        line.delete(l)
+    array.clear(session_lines)
+    for ln in ipda_lines
+        line.delete(ln)
+    for lb in ipda_labels
+        label.delete(lb)
+    array.fill(ipda_lines, na)
+    array.fill(ipda_labels, na)
+// =============================================================================
+//#endregion
+// =============================================================================
+
+//==============================================================================
+//#region ✅ SECTION 2: MIDNIGHT OPEN (MO)
+//==============================================================================
+grp_mo = 'Midnight Opening (MO)'
+show_mo      = input.bool(true, 'Show MO |', inline = 'mo_1', group = grp_mo)
+disp_mode_mo = input.string('Last Day', 'Current Week', options = ['Last Day', 'Current Week', 'Current Month', '20 Days Lookback', '40 Days Lookback', '60 Days Lookback'], inline = 'mo_1', group = grp_mo)
+mo_style  = input.string('Solid', 'Line', options = ['Solid', 'Dashed', 'Dotted'], inline = 'mo_2', group = grp_mo)
+c_mo      = input.color(color.purple, '', inline = 'mo_2', group = grp_mo)
+w_mo      = input.int(1, 'Width', minval = 1, inline = 'mo_2', group = grp_mo)
+mo_lbl_sz = input.string('Tiny', 'Label', options = ['None', 'Tiny', 'Small', 'Normal', 'Large'], inline = 'mo_2', group = grp_mo)
+
+var mo_lines  = array.new_line(0)
+var mo_labels = array.new_label(0)
+
+int start_of_day = ta.valuewhen(is_new_day, time, 0)
+
+if show_mo
+
+    if is_ny_midnight
+        float mo_p = open
+        line  l = line.new(time, mo_p, time, mo_p, xloc.bar_time, color=c_mo, width=w_mo, style=get_style(mo_style))
+        label lb = mo_lbl_sz != 'None' ? label.new(time, mo_p, 'Midnight Open', xloc.bar_time, style=label.style_label_left, color=#ffffff00, textcolor=c_mo, size=get_label_size(mo_lbl_sz)) : na
+        
+        array.push(mo_lines, l)
+        array.push(mo_labels, lb)
+
+
+    if array.size(mo_lines) > 0
+        line  last_l  = array.get(mo_lines, array.size(mo_lines) - 1)
+        label last_lb = array.get(mo_labels, array.size(mo_labels) - 1)
+        
+        int start_t = line.get_x1(last_l)
+        int target_1615 = timestamp('America/New_York', year(start_t, "America/New_York"), month(start_t, "America/New_York"), dayofmonth(start_t, "America/New_York"), 16, 15, 0)
+
+        if time <= target_1615
+            line.set_x2(last_l, time)
+            if not na(last_lb)
+                label.set_x(last_lb, time)
+        else
+            line.set_x2(last_l, target_1615)
+            if not na(last_lb)
+                label.set_x(last_lb, target_1615)
+
+    if is_new_day or barstate.islast
+        int limit_t = switch disp_mode_mo
+            'Last Day'       => start_of_day
+            'Current Week'   => cw_time
+            'Current Month'  => cm_time
+            '20 Days Lookback' => lookback_20_t
+            '40 Days Lookback' => lookback_40_t
+            '60 Days Lookback' => lookback_60_t
+            => 0
+
+        if array.size(mo_lines) > 0
+            for i = array.size(mo_lines) - 1 to 0
+                line  l_check = array.get(mo_lines, i)
+                bool should_delete = line.get_x1(l_check) < limit_t or (disp_mode_mo == 'Last Day' and i < array.size(mo_lines) - 1)
+                
+                if should_delete
+                    line.delete(array.remove(mo_lines, i))
+                    label.delete(array.remove(mo_labels, i))
+
+else if not show_mo and array.size(mo_lines) > 0
+    for l in mo_lines
+        line.delete(l)
+    for lb in mo_labels
+        label.delete(lb)
+    array.clear(mo_lines)
+    array.clear(mo_labels)
+//==============================================================================
+//#endregion
+//==============================================================================
+
+//==============================================================================
+//#region ✅ SECTION 3: PREVIOUS LEVELS (PDH/PDL/PWH/PWL/PMH/PML)
+//=============================================================================
+grp_pxl = 'PREVIOUS HIGH/LOW LEVELS (PXH/PXL)'
+show_pxl = input.bool(true, 'Show PXH/PXL', group = grp_pxl)
+
+s_pxl    = input.string('Solid', 'Line', options = ['Solid', 'Dashed', 'Dotted'], inline = 'style', group = grp_pxl)
+c_master = input.color(color.black, '', inline = 'style', group = grp_pxl)
+w_pxl    = input.int(1, 'Width', minval = 1, inline = 'style', group = grp_pxl)
+px_txt_s = input.string('Tiny', 'Label', options = ['None', 'Tiny', 'Small', 'Normal', 'Large', 'Huge'], inline = 'style', group = grp_pxl)
+
+// --- Variables Data ---
+var float d_h = high, var float d_l = low, var int d_ht = time, var int d_lt = time
+var float ph_val = na, var float pl_val = na, var int ph_t = na, var int pl_t = na
+var line ph_l = na, var line pl_l = na, var label ph_lb = na, var label pl_lb = na
+var bool ph_brk = false, var bool pl_brk = false
+
+var float w_h = high, var float w_l = low, var int w_ht = time, var int w_lt = time
+var float pwh_val = na, var float pwl_val = na, var int pwh_t = na, var int pwl_t = na
+var line pwh_l = na, var line pwl_l = na, var label pwh_lb = na, var label pwl_lb = na
+var bool pwh_brk = false, var bool pwl_brk = false
+var bool pwh_drawn = false, var bool pwl_drawn = false // ตัวแปรสถานะป้องกันการแอบสร้างซ้ำกลางสัปดาห์
+
+var float m_h = high, var float m_l = low, var int m_ht = time, var int m_lt = time
+var float pmh_val = na, var float pml_val = na, var int pmh_t = na, var int pml_t = na
+var line pmh_l = na, var line pml_l = na, var label pmh_lb = na, var label pml_lb = na
+var bool pmh_brk = false, var bool pml_brk = false
+var bool pmh_drawn = false, var bool pml_drawn = false // ตัวแปรสถานะป้องกันการแอบสร้างซ้ำกลางเดือน
+
+// --- Logic Calculation ---
+if is_new_day
+    ph_val := d_h, pl_val := d_l
+    ph_t := d_ht, pl_t := d_lt
+    d_h := high, d_l := low
+    d_ht := time, d_lt := time
+    ph_brk := false, pl_brk := false
+    line.delete(ph_l), line.delete(pl_l), label.delete(ph_lb), label.delete(pl_lb)
+    ph_l := na, pl_l := na, ph_lb := na, pl_lb := na
+else
+    d_h := math.max(high, d_h), d_l := math.min(low, d_l)
+    if high == d_h
+        d_ht := time
+    if low == d_l
+        d_lt := time
+
+if is_new_week
+    pwh_val := w_h, pwl_val := w_l
+    pwh_t := w_ht, pwl_t := w_lt
+    w_h := high, w_l := low
+    w_ht := time, w_lt := time
+    pwh_brk := false, pwl_brk := false
+    pwh_drawn := false, pwl_drawn := false // รีเซ็ตสถานะเมื่อขึ้นสัปดาห์ใหม่
+    line.delete(pwh_l), line.delete(pwl_l), label.delete(pwh_lb), label.delete(pwl_lb)
+    pwh_l := na, pwl_l := na, pwh_lb := na, pwl_lb := na
+else
+    w_h := math.max(high, w_h), w_l := math.min(low, w_l)
+    if high == w_h
+        w_ht := time
+    if low == w_l
+        w_lt := time
+
+if is_new_month
+    pmh_val := m_h, pml_val := m_l
+    pmh_t := m_ht, pml_t := m_lt
+    m_h := high, m_l := low
+    m_ht := time, m_lt := time
+    pmh_brk := false, pml_brk := false
+    pmh_drawn := false, pml_drawn := false // รีเซ็ตสถานะเมื่อขึ้นเดือนใหม่
+    line.delete(pmh_l), line.delete(pml_l), label.delete(pmh_lb), label.delete(pml_lb)
+    pmh_l := na, pml_l := na, pmh_lb := na, pml_lb := na
+else
+    m_h := math.max(high, m_h), m_l := math.min(low, m_l)
+    if high == m_h
+        m_ht := time
+    if low == m_l
+        m_lt := time
+
+
+if show_pxl
+    // ==========================================
+    // 1. Daily Levels (Master สำหรับรวบชื่อ)
+    // ==========================================
+
+    // --- PDH (High) ---
+    if not na(ph_val)
+        if na(ph_l)
+            ph_l  := line.new(ph_t, ph_val, time, ph_val, xloc=xloc.bar_time, color=c_master, width=w_pxl, style=get_style(s_pxl))
+            ph_lb := label.new(time, ph_val, "", xloc=xloc.bar_time, style=label.style_label_left, color=#ffffff00, textcolor=c_master, size=get_label_size(px_txt_s))
+        
+        if not ph_brk
+            line.set_x2(ph_l, time), label.set_x(ph_lb, time)
+            
+            string _txt = "PDH"
+            if ph_val == pwh_val and not pwh_brk 
+                _txt += " + PWH"
+                pwh_drawn := true // ล็อกไว้เลยว่า Daily เอาชื่อไปใช้แล้ว ห้าม Weekly วาดซ้ำ
+            if ph_val == pmh_val and not pmh_brk 
+                _txt += " + PMH"
+                pmh_drawn := true // ล็อกไว้เลยว่า Daily เอาชื่อไปใช้แล้ว ห้าม Monthly วาดซ้ำ
+            
+            label.set_text(ph_lb, _txt)
+            if high >= ph_val 
+                ph_brk := true
+
+    // --- PDL (Low) ---
+    if not na(pl_val)
+        if na(pl_l)
+            pl_l  := line.new(pl_t, pl_val, time, pl_val, xloc=xloc.bar_time, color=c_master, width=w_pxl, style=get_style(s_pxl))
+            pl_lb := label.new(time, pl_val, "", xloc=xloc.bar_time, style=label.style_label_left, color=#ffffff00, textcolor=c_master, size=get_label_size(px_txt_s))
+        
+        if not pl_brk
+            line.set_x2(pl_l, time), label.set_x(pl_lb, time)
+            
+            string _txt = "PDL"
+            if pl_val == pwl_val and not pwl_brk 
+                _txt += " + PWL"
+                pwl_drawn := true // ล็อกไว้เลยว่า Daily เอาชื่อไปใช้แล้ว ห้าม Weekly วาดซ้ำ
+            if pl_val == pml_val and not pml_brk 
+                _txt += " + PML"
+                pml_drawn := true // ล็อกไว้เลยว่า Daily เอาชื่อไปใช้แล้ว ห้าม Monthly วาดซ้ำ
+                
+            label.set_text(pl_lb, _txt)
+            if low <= pl_val 
+                pl_brk := true
+
+
+    // ==========================================
+    // 2. Weekly Levels
+    // ==========================================
+
+    // Check ซ้ำกับ Daily หรือไม่
+    bool _dup_pwh = (pwh_val == ph_val and not ph_brk) or pwh_drawn
+    bool _dup_pwl = (pwl_val == pl_val and not pl_brk) or pwl_drawn
+
+    // ถ้าตรวจเจอว่าซ้ำ หรือโดนรวบชื่อไปแล้ว ให้ทำลายวัตถุของตัวมันเองทิ้งทันที
+    if _dup_pwh
+        line.delete(pwh_l), label.delete(pwh_lb), pwh_l := na, pwh_lb := na
+    if _dup_pwl
+        line.delete(pwl_l), label.delete(pwl_lb), pwl_l := na, pwl_lb := na
+
+    // --- PWH ---
+    if not na(pwh_val) and not _dup_pwh
+        if na(pwh_l)
+            pwh_l  := line.new(pwh_t, pwh_val, time, pwh_val, xloc=xloc.bar_time, color=c_master, width=w_pxl, style=get_style(s_pxl))
+            pwh_lb := label.new(time, pwh_val, "", xloc=xloc.bar_time, style=label.style_label_left, color=#ffffff00, textcolor=c_master, size=get_label_size(px_txt_s))
+
+        if not pwh_brk
+            line.set_x2(pwh_l, time), label.set_x(pwh_lb, time)
+            
+            string _txt = "PWH"
+            if pwh_val == pmh_val and not pmh_brk 
+                _txt += " + PMH"
+                pmh_drawn := true // ถ้า Weekly รวบเอา Monthly ไปแล้ว ก็ให้ล็อก Monthly ไว้ด้วย
+            
+            label.set_text(pwh_lb, _txt)
+            if high >= pwh_val 
+                pwh_brk := true
+
+    // --- PWL ---
+    if not na(pwl_val) and not _dup_pwl
+        if na(pwl_l)
+            pwl_l  := line.new(pwl_t, pwl_val, time, pwl_val, xloc=xloc.bar_time, color=c_master, width=w_pxl, style=get_style(s_pxl))
+            pwl_lb := label.new(time, pwl_val, "", xloc=xloc.bar_time, style=label.style_label_left, color=#ffffff00, textcolor=c_master, size=get_label_size(px_txt_s))
+
+        if not pwl_brk
+            line.set_x2(pwl_l, time), label.set_x(pwl_lb, time)
+            
+            string _txt = "PWL"
+            if pwl_val == pml_val and not pml_brk 
+                _txt += " + PML"
+                pml_drawn := true // ถ้า Weekly รวบเอา Monthly ไปแล้ว ก็ให้ล็อก Monthly ไว้ด้วย
+                
+            label.set_text(pwl_lb, _txt)
+            if low <= pwl_val 
+                pwl_brk := true
+
+
+    // ==========================================
+    // 3. Monthly Levels
+    // ==========================================
+
+    // Check ซ้ำกับ Daily หรือ Weekly หรือไม่
+    bool _dup_pmh = (pmh_val == ph_val and not ph_brk) or (pmh_val == pwh_val and not pwh_brk) or pmh_drawn
+    bool _dup_pml = (pml_val == pl_val and not pl_brk) or (pml_val == pwl_val and not pwl_brk) or pml_drawn
+
+    // ถ้าซ้ำกับรุ่นพี่ -> ให้ลบวัตถุของ Monthly ทิ้งไปเลย ไม่ต้องวาด
+    if _dup_pmh
+        line.delete(pmh_l), label.delete(pmh_lb), pmh_l := na, pmh_lb := na
+    if _dup_pml
+        line.delete(pml_l), label.delete(pml_lb), pml_l := na, pml_lb := na
+
+    // --- PMH ---
+    if not na(pmh_val) and not _dup_pmh
+        if na(pmh_l)
+            pmh_l  := line.new(pmh_t, pmh_val, time, pmh_val, xloc=xloc.bar_time, color=c_master, width=w_pxl, style=get_style(s_pxl))
+            pmh_lb := label.new(time, pmh_val, "PMH", xloc=xloc.bar_time, style=label.style_label_left, color=#ffffff00, textcolor=c_master, size=get_label_size(px_txt_s))
+
+        if not pmh_brk
+            line.set_x2(pmh_l, time), label.set_x(pmh_lb, time)
+            if high >= pmh_val
+                pmh_brk := true
+
+    // --- PML ---
+    if not na(pml_val) and not _dup_pml
+        if na(pml_l)
+            pml_l  := line.new(pml_t, pml_val, time, pml_val, xloc=xloc.bar_time, color=c_master, width=w_pxl, style=get_style(s_pxl))
+            pml_lb := label.new(time, pml_val, "PML", xloc=xloc.bar_time, style=label.style_label_left, color=#ffffff00, textcolor=c_master, size=get_label_size(px_txt_s))
+
+        if not pml_brk
+            line.set_x2(pml_l, time), label.set_x(pml_lb, time)
+            if low <= pml_val 
+                pml_brk := true
+
+else
+    // ถ้าปิดปุ่ม Enable ให้ทำลาย Object ทั้งหมดทิ้งทันที หน้าจอจะได้ไม่ค้างเส้นเก่า
+    line.delete(ph_l), line.delete(pl_l), label.delete(ph_lb), label.delete(pl_lb)
+    line.delete(pwh_l), line.delete(pwl_l), label.delete(pwh_lb), label.delete(pwl_lb)
+    line.delete(pmh_l), line.delete(pml_l), label.delete(pmh_lb), label.delete(pml_lb)
+    ph_l := na, pl_l := na, ph_lb := na, pl_lb := na
+    pwh_l := na, pwl_l := na, pwh_lb := na, pwl_lb := na
+    pmh_l := na, pml_l := na, pmh_lb := na, pml_lb := na
+//=============================================================================
+//#endregion
+//=============================================================================
+
+///==============================================================================
+//#region ✅ SECTION 4: NEW DAY/WEEK OPENING GAP (NXOG)
+//=============================================================================
+grp_nx = 'NEW DAY/WEEK OPENING GAP (NXOG)'
+show_nxog = input.bool(true, 'Show NXOG |', inline = '1st', group = grp_nx)
+show_ticks_nx = input.bool(true, 'Range |', inline='1st', group=grp_nx, tooltip = "Range is visible only when C.E. Label is active")
+disp_mode_nx = input.string('60 Days Lookback', 'Display Limit', options = ['Last Day', 'Current Week', 'Current Month', '20 Days Lookback', '40 Days Lookback', '60 Days Lookback'], inline = '1st', group = grp_nx)
+
+nxog_stop = input.bool(true, 'Stop After Fill', inline = 'main', group = grp_nx)
+nxog_delete = input.bool(false, 'Delete After Fill', inline = 'main', group = grp_nx, tooltip = "Filled logic is based on 4h close")
+
+c_bull = input.color(color.rgb(8, 153, 129), 'Bullish', inline='nx_col', group=grp_nx)
+c_bear = input.color(color.rgb(242, 54, 69), 'Bearish', inline='nx_col', group=grp_nx)
+w_og = input.int(1, 'Width', minval = 1, inline = 'nx_col', group = grp_nx)
+og_trans_val = input.int(95, 'Fill %', minval = 0, maxval = 100, inline = 'nx_col', group = grp_nx)
+
+s_og = input.string('Dotted', 'High/Low', options = ['None', 'Solid', 'Dashed', 'Dotted'], inline = 'nx_hl', group = grp_nx)
+nx_lbl_sz = input.string('None', 'Label', options = ['None', 'Tiny', 'Small', 'Normal', 'Large'], inline = 'nx_hl', group = grp_nx)
+c_og_hl = input.color(color.new(color.black, 75), 'Color', inline = 'nx_hl', group = grp_nx)
+nx_ce_style = input.string('Dotted', 'C.E.', options = ['None', 'Solid', 'Dashed', 'Dotted'], inline = 'nx_ce', group = grp_nx)
+nx_ce_sz = input.string('None', 'Label', options = ['None', 'Tiny', 'Small', 'Normal', 'Large'], inline = 'nx_ce', group = grp_nx)
+c_nx_ce = input.color(color.new(color.black, 75), 'Color', inline = 'nx_ce', group = grp_nx)
+nx_q_style = input.string('Dotted', 'Quadrants', options = ['None', 'Solid', 'Dashed', 'Dotted'], inline = 'nx_q', group = grp_nx)
+nx_q_sz = input.string('None', 'Label', options = ['None', 'Tiny', 'Small', 'Normal', 'Large'], inline = 'nx_q', group = grp_nx)
+c_nx_q = input.color(color.new(color.black, 75), 'Color', inline = 'nx_q', group = grp_nx)
+
+f_update_gap_color(gap_data g, color bull_c, color bear_c, int trans) =>
+    color target_color = na
+    if g.is_bull
+        target_color := g.is_inversion ? bear_c : bull_c
+    else
+        target_color := g.is_inversion ? bull_c : bear_c
+    linefill.set_color(g.l_fill, color.new(target_color, trans))
+
+var ndog_gaps = array.new<gap_data>(0)
+var nwog_gaps = array.new<gap_data>(0)
+
+var int[] ndog_day_id = array.new_int(0)
+var int[] nwog_day_id = array.new_int(0)
+
+// ✅ แก้ไขแก้ไขการดึงข้อมูล 4H ป้องกันการดึงค่าอนาคต (Lookahead) 
+float tf_4h_close = request.security(syminfo.tickerid, "240", close, barmerge.gaps_off, barmerge.lookahead_off)
+bool is_new_4h = ta.change(time("240")) != 0
+
+if show_nxog
+    limit_reset_nx = switch disp_mode_nx
+        'Last Day'      => is_new_day
+        'Current Week'  => is_new_week
+        'Current Month' => is_new_month
+        => false
+
+    if limit_reset_nx
+        if array.size(ndog_gaps) > 0
+            for g in ndog_gaps
+                cleanup_gap(g)
+            array.clear(ndog_gaps)
+        if array.size(nwog_gaps) > 0
+            for g in nwog_gaps
+                cleanup_gap(g)
+            array.clear(nwog_gaps)
+        array.clear(ndog_day_id)
+        array.clear(nwog_day_id)
+
+    if is_new_day
+        max_days_nx = switch disp_mode_nx
+            '20 Days Lookback' => 20
+            '40 Days Lookback' => 40
+            '60 Days Lookback' => 60
+            => 0
+
+        if max_days_nx > 0 and array.size(ndog_day_id) > 0
+            for i = array.size(ndog_day_id) - 1 to 0
+                if (day_count - array.get(ndog_day_id, i)) >= max_days_nx
+                    if array.size(ndog_gaps) > i
+                        cleanup_gap(array.get(ndog_gaps, i))
+                        array.remove(ndog_gaps, i)
+                    array.remove(ndog_day_id, i)
+
+        if max_days_nx > 0 and array.size(nwog_day_id) > 0
+            for i = array.size(nwog_day_id) - 1 to 0
+                if (day_count - array.get(nwog_day_id, i)) >= max_days_nx
+                    if array.size(nwog_gaps) > i
+                        cleanup_gap(array.get(nwog_gaps, i))
+                        array.remove(nwog_gaps, i)
+                    array.remove(nwog_day_id, i)
+
+    if is_new_4h
+        if array.size(ndog_gaps) > 0
+            for i = array.size(ndog_gaps) - 1 to 0
+                g = array.get(ndog_gaps, i)
+                if not g.filled
+                    if g.is_bull
+                        if not g.is_inversion
+                            if tf_4h_close <= g.l
+                                g.is_inversion := true
+                                f_update_gap_color(g, c_bull, c_bear, og_trans_val)
+                        else
+                            if tf_4h_close >= g.h
+                                g.filled := true
+                    else
+                        if not g.is_inversion
+                            if tf_4h_close >= g.h
+                                g.is_inversion := true
+                                f_update_gap_color(g, c_bull, c_bear, og_trans_val)
+                        else
+                            if tf_4h_close <= g.l
+                                g.filled := true
+                    
+                    if g.filled
+                        if nxog_delete
+                            cleanup_gap(g)
+                            array.remove(ndog_gaps, i)
+                            // ✅ ดึงออกพร้อมกันทันทีเพื่อป้องกันดรรชนี Index คลาดเคลื่อน
+                            array.remove(ndog_day_id, i) 
+                            continue
+
+        if array.size(nwog_gaps) > 0
+            for i = array.size(nwog_gaps) - 1 to 0
+                g = array.get(nwog_gaps, i)
+                if not g.filled
+                    if g.is_bull
+                        if not g.is_inversion
+                            if tf_4h_close <= g.l
+                                g.is_inversion := true
+                                f_update_gap_color(g, c_bull, c_bear, og_trans_val)
+                        else
+                            if tf_4h_close >= g.h
+                                g.filled := true
+                    else
+                        if not g.is_inversion
+                            if tf_4h_close >= g.h
+                                g.is_inversion := true
+                                f_update_gap_color(g, c_bull, c_bear, og_trans_val)
+                        else
+                            if tf_4h_close <= g.l
+                                g.filled := true
+                    
+                    if g.filled
+                        if nxog_delete
+                            cleanup_gap(g)
+                            array.remove(nwog_gaps, i)
+                            // ✅ ดึงออกพร้อมกันทันทีเพื่อป้องกันดรรชนี Index คลาดเคลื่อน
+                            array.remove(nwog_day_id, i)
+                            continue
+
+    if is_new_day
+        if is_new_week and open != close[1]
+            color init_c = open > close[1] ? c_bull : c_bear
+            gap_data new_nwog = f_render_gap(close[1], open, time, 'NWOG', init_c, init_c, og_trans_val, s_og, c_og_hl, nx_lbl_sz, nx_ce_style, c_nx_ce, nx_ce_sz, nx_q_style, c_nx_q, nx_q_sz, w_og, show_ticks_nx, true)
+            array.push(nwog_gaps, new_nwog)
+            array.push(nwog_day_id, day_count)
+            
+        // 2. สร้าง NDOG (เช็คก่อนว่ามี Gap จริงไหม)
+        else if not is_new_week and open != close[1]
+            color init_c = open > close[1] ? c_bull : c_bear
+            gap_data new_ndog = f_render_gap(close[1], open, time, 'NDOG', init_c, init_c, og_trans_val, s_og, c_og_hl, nx_lbl_sz, nx_ce_style, c_nx_ce, nx_ce_sz, nx_q_style, c_nx_q, nx_q_sz, w_og, show_ticks_nx, false)
+            array.push(ndog_gaps, new_ndog)
+            array.push(ndog_day_id, day_count)
+
+    // ✅ ปรับปรุงระบบการอัปเดตพิกัดเส้นให้มีประสิทธิภาพสูงขึ้น ไม่โหลดกราฟหนักจนเกินไป
+    if array.size(nwog_gaps) > 0
+        for i = array.size(nwog_gaps) - 1 to 0
+            g = array.get(nwog_gaps, i)
+            if not (nxog_stop and g.filled)
+                line.set_x2(g.l_hi, time)
+                line.set_x2(g.l_lo, time)
+                if not na(g.lb_hi)
+                    label.set_x(g.lb_hi, time)
+                if not na(g.lb_lo)
+                    label.set_x(g.lb_lo, time)
+                if not na(g.l_mid)
+                    line.set_x2(g.l_mid, time)
+                if not na(g.lb_mid)
+                    label.set_x(g.lb_mid, time)
+                if not na(g.l_q25)
+                    line.set_x2(g.l_q25, time)
+                    line.set_x2(g.l_q75, time)
+                if not na(g.lb_q25)
+                    label.set_x(g.lb_q25, time)
+                if not na(g.lb_q75)
+                    label.set_x(g.lb_q75, time)
+
+    if array.size(ndog_gaps) > 0
+        for i = array.size(ndog_gaps) - 1 to 0
+            g = array.get(ndog_gaps, i)
+            if not (nxog_stop and g.filled)
+                line.set_x2(g.l_hi, time)
+                line.set_x2(g.l_lo, time)
+                if not na(g.lb_hi)
+                    label.set_x(g.lb_hi, time)
+                if not na(g.lb_lo)
+                    label.set_x(g.lb_lo, time)
+                if not na(g.l_mid)
+                    line.set_x2(g.l_mid, time)
+                if not na(g.lb_mid)
+                    label.set_x(g.lb_mid, time)
+                if not na(g.l_q25)
+                    line.set_x2(g.l_q25, time)
+                    line.set_x2(g.l_q75, time)
+                if not na(g.lb_q25)
+                    label.set_x(g.lb_q25, time)
+                if not na(g.lb_q75)
+                    label.set_x(g.lb_q75, time)
+else
+    if array.size(ndog_gaps) > 0 or array.size(nwog_gaps) > 0
+        for g in ndog_gaps
+            cleanup_gap(g)
+        for g in nwog_gaps
+            cleanup_gap(g)
+        array.clear(ndog_gaps)
+        array.clear(nwog_gaps)
+        array.clear(ndog_day_id)
+        array.clear(nwog_day_id)
+//==============================================================================
+//#endregion
+//==============================================================================
+
+//==============================================================================
+//#region ✅ SECTION 5: OPENING RANGE GAP (ORG)
+//=============================================================================
+grp_org = 'OPENING RANGE GAP (ORG)'
+show_org = input.bool(true, 'Enable ORG |', inline = '1st', group = grp_org)
+show_ticks_org = input.bool(true, 'Range |', inline = '1st', group = grp_org,  tooltip = "Range is visible only when C.E. Label is active")
+disp_mode_org = input.string('Current Week', 'Display Limit', options = ['Last Day', 'Current Week', 'Current Month', '20 Days Lookback', '40 Days Lookback', '60 Days Lookback'], inline = '1st', group = grp_org)
+org_stop = input.bool(false, 'Stop After Fill', inline = 'org_l', group = grp_org)
+org_delete = input.bool(false, 'Delete After Fill', inline = 'org_l', group = grp_org, tooltip = "Filled logic is based on wicking")
+
+c_bull_org = input.color(color.rgb(8, 153, 129), 'Bullish', inline = 'org_col', group = grp_org)
+c_bear_org = input.color(color.rgb(242, 54, 69), 'Bearish', inline = 'org_col', group = grp_org)
+w_org_line = input.int(1, 'Width', minval = 1, inline = 'org_col', group = grp_org)
+org_transp = input.int(90, 'Fill %', minval = 0, maxval = 100, inline = 'org_col', group = grp_org)
+s_org_hl = input.string('Dotted', 'High/Low', options = ['None', 'Solid', 'Dashed', 'Dotted'], inline = 'org_hl', group = grp_org)
+org_hl_sz = input.string('Tiny', 'Label', options = ['None', 'Tiny', 'Small', 'Normal', 'Large'], inline = 'org_hl', group = grp_org)
+c_org_hl_i = input.color(color.new(color.black, 50), 'Color', inline = 'org_hl', group = grp_org)
+ce_style = input.string('Dotted', 'C.E.', options = ['None', 'Solid', 'Dashed', 'Dotted'], inline = 'org_ce', group = grp_org)
+ce_lbl_sz = input.string('Tiny', 'Label', options = ['None', 'Tiny', 'Small', 'Normal', 'Large'], inline = 'org_ce', group = grp_org)
+c_ce_i = input.color(color.new(color.black, 50), 'Color', inline = 'org_ce', group = grp_org)
+q_style = input.string('Dotted', 'Quadrants', options = ['None', 'Solid', 'Dashed', 'Dotted'], inline = 'org_q', group = grp_org)
+q_lbl_sz = input.string('Tiny', 'Label', options = ['None', 'Tiny', 'Small', 'Normal', 'Large'], inline = 'org_q', group = grp_org)
+c_q_i = input.color(color.new(color.black, 50), 'Color', inline = 'org_q', group = grp_org)
+
+var org_gaps = array.new<org_gap_data>(0)
+var float org_anchor_price = na
+
+if is_bar_closing_at(16, 15) or is_bar_closing_at(13, 0)
+    org_anchor_price := close
+
+if show_org
+
+    if is_new_day
+        if disp_mode_org == 'Last Day'
+            if array.size(org_gaps) > 0
+                for i = array.size(org_gaps) - 1 to 0
+                    cleanup_gap(array.get(org_gaps, i).base)
+                array.clear(org_gaps)
+                
+        else if disp_mode_org == 'Current Week' and is_new_week
+            if array.size(org_gaps) > 0
+                int friday_count = 0  // ตัวนับจำนวนวันศุกร์ที่พบ
+                
+                for i = array.size(org_gaps) - 1 to 0
+                    org_g = array.get(org_gaps, i)
+                    bool is_friday = dayofweek(org_g.end_time, 'America/New_York') == 6
+                    
+                    if not is_friday
+                        // 1. ถ้าไม่ใช่วันศุกร์ (จันทร์-พฤหัสบดี) ลบทิ้งทันทีเพื่อความคลีน
+                        cleanup_gap(org_g.base)
+                        array.remove(org_gaps, i)
+                    else
+                        // 2. ถ้าเป็นวันศุกร์ ให้บวกตัวนับเพิ่ม
+                        friday_count := friday_count + 1
+                        // 3. ถ้าเจอวันศุกร์เกิน 3 อันแล้ว (อันที่ 4 เป็นต้นไป) ให้ลบทิ้งให้หมด
+                        if friday_count > 3
+                            cleanup_gap(org_g.base)
+                            array.remove(org_gaps, i)
+                        
+        else if disp_mode_org == 'Current Month' and is_new_month
+            if array.size(org_gaps) > 0
+                for i = array.size(org_gaps) - 1 to 0
+                    cleanup_gap(array.get(org_gaps, i).base)
+                array.clear(org_gaps)
+
+    if is_ny_0930 and not na(org_anchor_price)
+        max_days_org = switch disp_mode_org
+            '20 Days Lookback' => 20
+            '40 Days Lookback' => 40
+            '60 Days Lookback' => 60
+            => 0
+        
+        if max_days_org > 0 and array.size(org_gaps) > 0
+            if (day_count - array.get(org_gaps, 0).d_id) >= max_days_org
+                cleanup_gap(array.get(org_gaps, 0).base), array.remove(org_gaps, 0)
+
+        int session_end_today = timestamp('America/New_York', year, month, dayofmonth, 16, 15, 0)
+        gap_data g = f_render_gap(org_anchor_price, open, time, 'ORG', c_bull_org, c_bear_org, org_transp, s_org_hl, c_org_hl_i, org_hl_sz, ce_style, c_ce_i, ce_lbl_sz, q_style, c_q_i, q_lbl_sz, w_org_line, show_ticks_org, false)
+        array.push(org_gaps, org_gap_data.new(g, session_end_today, day_count))
+
+    if array.size(org_gaps) > 0
+        for i = array.size(org_gaps) - 1 to 0
+            org_g = array.get(org_gaps, i)
+            g = org_g.base
+            
+            if not g.filled
+                if (g.is_bull and low <= g.l) or (not g.is_bull and high >= g.h)
+                    g.filled := true
+                    if org_delete
+                        cleanup_gap(g), array.remove(org_gaps, i)
+                        continue 
+
+            int current_ext = math.min(time, org_g.end_time)
+            if not (org_stop and g.filled)
+                line.set_x2(g.l_hi, current_ext)
+                line.set_x2(g.l_lo, current_ext)
+                if not na(g.lb_hi)
+                    label.set_x(g.lb_hi, current_ext)
+                if not na(g.lb_lo)
+                    label.set_x(g.lb_lo, current_ext)
+                
+                if not na(g.l_mid)
+                    line.set_x2(g.l_mid, current_ext)
+                    if not na(g.lb_mid)
+                        label.set_x(g.lb_mid, current_ext)
+                
+                if not na(g.l_q25)
+                    line.set_x2(g.l_q25, current_ext)
+                    line.set_x2(g.l_q75, current_ext)
+                    if not na(g.lb_q25)
+                        label.set_x(g.lb_q25, current_ext)
+                    if not na(g.lb_q75)
+                        label.set_x(g.lb_q75, current_ext)
+else
+    if array.size(org_gaps) > 0
+        for og in org_gaps
+            cleanup_gap(og.base)
+        array.clear(org_gaps)
+//==============================================================================
+//#endregion
+//============================================================================== 
+
+// =============================================================================
+//#region ✅ SECTION 6: WATERMARK
+// =============================================================================
+grp_wm      = 'WATERMARK'
+show_wm     = input.bool(true, 'Enable Watermark', group = grp_wm)
+wm_title    = input.string('', 'Title', inline = 'wc', group = grp_wm)
+wm_subtitle = input.string('', 'Subtitle', inline = 'wc', group = grp_wm)
+show_sym    = input.bool(true, 'Show Info', inline = 'wc', group = grp_wm)
+wm_v_pos    = input.string('bottom', 'Vertical', options = ['top', 'middle', 'bottom'], inline = 'wp', group = grp_wm)
+wm_h_pos    = input.string('right', 'Horizontal', options = ['left', 'center', 'right'], inline = 'wp', group = grp_wm)
+s_title_opt = input.string('Large', 'Title', options = ['Tiny', 'Small', 'Normal', 'Large', 'Huge'], inline = 'sz1', group = grp_wm)
+s_sub_opt   = input.string('Normal', 'Sub', options = ['Tiny', 'Small', 'Normal', 'Large', 'Huge'], inline = 'sz1', group = grp_wm)
+s_info_opt  = input.string('Small', 'Info', options = ['Tiny', 'Small', 'Normal', 'Large', 'Huge'], inline = 'sz1', group = grp_wm)
+c_title     = input.color(color.new(#000000, 0), 'Title', inline = 'ws1', group = grp_wm)
+c_sub       = input.color(color.new(#808080, 0), 'Sub', inline = 'ws1', group = grp_wm)
+c_sym       = input.color(color.new(#808080, 0), 'Info', inline = 'ws1', group = grp_wm)
+c_bg        = input.color(color.new(#ffffff, 100), 'Background', inline = 'ws1', group = grp_wm)
+
+var table watermark = na
+
+if show_wm and barstate.islast
+    table.clear(watermark, 0, 0, 0, 3)
+    watermark := table.new(get_table_pos(wm_v_pos, wm_h_pos), 1, 4)
+    
+    h_align   = wm_h_pos == 'left' ? text.align_left : wm_h_pos == 'right' ? text.align_right : text.align_center
+    sym_text  = syminfo.ticker + ' | ' + timeframe.period 
+    date_text = str.format('{0,date,dd/MM/yyyy}', time)
+
+    sz_title  = get_table_size(s_title_opt)
+    sz_sub    = get_table_size(s_sub_opt)
+    sz_info   = get_table_size(s_info_opt)
+
+    // วาดข้อความลงเซลล์
+    table.cell(watermark, 0, 0, wm_title, text_color = c_title, text_size = sz_title, bgcolor = c_bg, text_halign = h_align)
+    table.cell(watermark, 0, 1, wm_subtitle, text_color = c_sub, text_size = sz_sub, bgcolor = c_bg, text_halign = h_align)
+ 
+    if show_sym
+        table.cell(watermark, 0, 2, date_text, text_color = c_sym, text_size = sz_info, bgcolor = c_bg, text_halign = h_align)
+        table.cell(watermark, 0, 3, sym_text, text_color = c_sym, text_size = sz_info, bgcolor = c_bg, text_halign = h_align)
+// =============================================================================
+//#endregion
+//==============================================================================
+
+//==============================================================================
+//#region ✅ SECTION Z: CREDIT AND APPRECIATION
+//==============================================================================
+//  THIS SCRIPT IS A COMPILATION AND OPTIMIZATION BASED ON OPEN-SOURCE CONCEPTS FROM VARIOUS AUTHOR.
+//  DEEP GRATITUDE AND FULL CREDIT TO THE ORIGINAL AUTHORS FOR THEIR LOGIC AND IDEAS:
+//         1. Sessions [LuxAlgo] by LuxAlgo 
+//            - LOGIC FOR SESSION TIMING AND VISUALIZATION.
+//         2. AG FX - Watermark by AGFXTRADING 
+//            - LOGIC/DESIGN FOR THE ON-SCREEN WATERMARK DISPLAY.
+//         3. NDOG & NWOG Indicator by Turkish_Trader_ 
+//            - LOGIC FOR NEW DAY OPENING GAP & NEW WEEK OPENING GAP.
+//  DEVELOPED BY: PTN.Trades WITH Gemini
+//==============================================================================
+//#endregion
+//==============================================================================
